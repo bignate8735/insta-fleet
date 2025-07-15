@@ -1,0 +1,63 @@
+name: Deploy Booking Service to ECS
+
+on:
+  push:
+    paths:
+      - "services/booking/**"
+      - ".github/workflows/booking-deploy.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy-booking:
+    name: Build & Deploy Booking
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: us-east-1
+      ECR_REPO_NAME: instafleet-booking
+      SERVICE_NAME: booking
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build Docker image
+        run: |
+          docker build -t $ECR_REPO_NAME ./services/booking
+
+      - name: Tag image
+        run: |
+          IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${ECR_REPO_NAME}:latest"
+          docker tag $ECR_REPO_NAME:latest $IMAGE_URI
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+
+      - name: Push Docker image to ECR
+        run: |
+          docker push $IMAGE_URI
+
+      - name: Set Terraform variable for image
+        run: |
+          echo 'booking_image = "${{ env.IMAGE_URI }}"' > services/booking/terraform/image.auto.tfvars
+
+      - name: Terraform Init
+        working-directory: environments/dev
+        run: terraform init
+
+      - name: Terraform Validate
+        working-directory: environments/dev
+        run: terraform validate
+
+      - name: Terraform Apply
+        working-directory: environments/dev
+        run: terraform apply -auto-approve

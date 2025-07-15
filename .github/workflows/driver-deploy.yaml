@@ -1,0 +1,58 @@
+name: Deploy Driver Service
+
+on:
+  push:
+    paths:
+      - 'services/driver/**'
+      - '.github/workflows/driver-deploy.yaml'
+
+jobs:
+  deploy:
+    name: Build and Deploy Driver
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: us-east-1
+      ECR_REPOSITORY: ${{ secrets.DRIVER_ECR_REPOSITORY }}
+      ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}
+      ECS_SERVICE: driver-service
+      ECS_TASK_DEF_FILE: infra/ecs/driver-task-definition.json
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        role-to-assume: ${{ secrets.DEPLOY_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build and push Docker image
+      run: |
+        IMAGE_TAG=$(date +%s)
+        docker build -t $ECR_REPOSITORY:$IMAGE_TAG ./services/driver
+        docker push $ECR_REPOSITORY:$IMAGE_TAG
+        echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+
+    - name: Prepare ECS Task Definition
+      run: |
+        sed "s|<IMAGE>|$ECR_REPOSITORY:$IMAGE_TAG|" $ECS_TASK_DEF_FILE > task-def.json
+
+    - name: Register ECS Task Definition
+      id: task
+      run: |
+        TASK_DEF_ARN=$(aws ecs register-task-definition \
+          --cli-input-json file://task-def.json \
+          --query 'taskDefinition.taskDefinitionArn' --output text)
+        echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> $GITHUB_ENV
+
+    - name: Deploy to ECS
+      run: |
+        aws ecs update-service \
+          --cluster $ECS_CLUSTER \
+          --service $ECS_SERVICE \
+          --task-definition $TASK_DEF_ARN
